@@ -1,16 +1,18 @@
+import shutil
+from datetime import time, timedelta
 import json
 import os
 import time
 from pathlib import Path
 
-from tinydb import TinyDB, Query
 from concurrent.futures import ThreadPoolExecutor
-from tinyrecord import transaction
 from uuid import uuid4
 from yt_dlp import YoutubeDL
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 import requests
+
+import utils
 
 load_dotenv('.env')
 
@@ -18,9 +20,8 @@ app = Flask(__name__)
 
 WOMBO_API_KEY = os.getenv('WOMBO_API_KEY')
 API_URL = "https://api.luan.tools/api"
-FRAMERATE = 10
-db = TinyDB("database.json").table('jobs')
-NEW_IMAGE_WEIGHT = 0.0001
+FRAMERATE = 2
+NEW_IMAGE_WEIGHT = 0.1
 
 HEADERS = {
     'Authorization': f'Bearer {WOMBO_API_KEY}',
@@ -41,7 +42,8 @@ def get_styles():
 
 
 def stitch_ffmpeg(project_id: str):
-    command = f"ffmpeg -r {FRAMERATE} -i ./working/{project_id}/%d.jpg -i audio.m4a ./static/{project_id}/output.mp4"
+    command = f"ffmpeg -r {FRAMERATE} -i ./working/{project_id}/%d.jpg -i ./working/{project_id}/audio.m4a ./static/{project_id}.mp4"
+    os.system(f'cmd /c "{command}"')
 
 
 def create_new_task(use_target_image: bool):
@@ -105,6 +107,36 @@ def update_task(task_id: str, prompt: str, style=17, target_image_weight=0.1, wi
     return ret
 
 
+def get_many_tasks(tasks: [str], job_id, num_start=2):
+    res = [-1] * len(tasks)  # -1 is sentinel num, that nothing has happened yet
+
+    while -1 in res:
+        for ind, task in enumerate(tasks):
+            if res[ind] != -1:
+                continue
+
+            task_id_url = f"https://api.luan.tools/api/tasks/{task['id']}"
+            response_json = requests.request(
+                "GET", task_id_url, headers=HEADERS).json()
+
+            state = response_json["state"]
+
+            if state == "completed":
+                r = requests.request("GET", response_json["result"])
+                url = f"working/{job_id}/{num_start + ind}.jpg"
+                with open(f"./{url}", "wb") as image_file:
+                    image_file.write(r.content)
+                print("image saved successfully ")
+                res[ind] = url
+            elif state == "failed":
+                print("generation failed :(", json.dumps(response_json))
+                res[ind] = False
+
+        time.sleep(3)
+
+    return res
+
+
 def get_task(task_id: str, job_id: str, num=0):
     task_id_url = f"https://api.luan.tools/api/tasks/{task_id}"
 
@@ -128,9 +160,10 @@ def get_task(task_id: str, job_id: str, num=0):
         time.sleep(3)
 
 
-def download_video(url: str):
+def download_video(url: str, project_id: str):
+    print("attempting to download ", url, ' for ', project_id)
     ydl_opts = {
-        'outtmpl': './working/audio.m4a',
+        'outtmpl': f'./working/{project_id}/audio.m4a',
         'format': 'm4a/bestaudio/best',
         'writesubtitles': True,
         'subtitle': '--write-sub  --sub-langs en',
@@ -147,7 +180,35 @@ def download_video(url: str):
     return error_code
 
 
+def multi_img2img(prev_image_path: Path, project_id: str, prompt: str, style: int, start_num=2, number_generate=30):
+    print(f"[img2img] prompt:{prompt} s:{style} n:{num}")
+
+    tasks = []
+    for i in range(number_generate):
+        tasks.append(create_new_task(True))
+
+    for t in tasks:
+        target_image_url = t["target_image_url"]
+        with open(prev_image_path, 'rb') as f:
+            fields = target_image_url["fields"]
+            fields["file"] = f.read()
+            requests.request("POST", url=target_image_url["url"], files=fields)
+
+    for t in tasks:
+        update_task(t['id'], prompt, style=style, target_image_weight=(1 - NEW_IMAGE_WEIGHT))
+
+    res_arr = get_many_tasks(tasks, project_id, start_num)
+
+    for i in range(len(res_arr)):
+        if not res_arr[i]:
+            shutil.copyfile(prev_image_path, f"working/{project_id}/{start_num + i}.jpg")
+
+    return
+
+
 def new_img2img(prev_image_path: Path, project_id: str, prompt: str, style: int, num=2):
+    print(f"[img2img] prompt:{prompt} s:{style} n:{num}")
+
     task = create_new_task(True)
     task_id = task['id']
 
@@ -157,7 +218,7 @@ def new_img2img(prev_image_path: Path, project_id: str, prompt: str, style: int,
         fields["file"] = f.read()
         requests.request("POST", url=target_image_url["url"], files=fields)
 
-    updated_task = update_task(task_id, prompt, style=style, target_image_weight=(1 - NEW_IMAGE_WEIGHT * num))
+    updated_task = update_task(task_id, prompt, style=style, target_image_weight=(1 - NEW_IMAGE_WEIGHT))
     res = get_task(task_id, project_id, num)
 
     if res:
@@ -217,7 +278,7 @@ def new_image():
     while num < 10:
         print(f"Generating image {num}")
 
-        new_pic = new_img2img(Path(f"./working/{project_id}/0.jpg"), project_id, prompt, style, num + 1)
+        new_pic = new_img2img(Path(f"./working/{project_id}/{num}.jpg"), project_id, prompt, style, num + 1)
 
         if new_pic:
             res.append(new_pic)
@@ -231,23 +292,65 @@ def new_image():
         return "Failed to generate", 500
 
 
-def process_new_video(youtube_id: str, style: int):
-    pass
+def process_new_video(project_id: str, style: int, title: str):
+    """
+       Body Reqs:
+        - prompt: str
+        - style: int id
+       :return:
+       """
+    num = 0
+    res = []
+
+    subfile = None
+    files = os.listdir(f'./working/{project_id}')
+    for f in files:
+        if ".vtt" in f:
+            subfile = f
+
+    subs = utils.yoink_subtitles(Path(f'./working/{project_id}/{subfile}'), title)
+    caps = utils.generate_captions(subs, FRAMERATE)
+
+    while True:
+        print("Generating Image 0")
+        res1 = single_image(project_id, caps[0][0], style)
+        if res1:
+            res.append(res1)
+            break
+
+    for cap_tuple in caps:
+        if cap_tuple == caps[0]:
+            continue
+
+        for i in range(cap_tuple[1]):
+            print(f"Generating image {num}")
+            new_pic = new_img2img(Path(f"./working/{project_id}/{num}.jpg"), project_id, cap_tuple[0], style, num + 1)
+            if new_pic:
+                res.append(new_pic)
+                num += 1
+
+    stitch_ffmpeg(project_id)
 
 
 @app.route('/api/new-video', methods=['POST'])
 def new_video():
     data = request.json
-
-    data = request.json
-    if 'prompt' not in data:
+    if 'url' not in data:
         return "No prompt config found", 400
     if 'style' not in data:
         return "No style config found", 400
+    if 'title' not in data:
+        return "No title found", 400
 
-    download_video(data['url'])
+    project_id = str(uuid4())
+    err = download_video(data['url'], project_id)
 
-    return
+    time.sleep(1)
+    if not err:
+        process_new_video(project_id, data['style'], data['title'])
+        return jsonify({"projectId": project_id})
+    else:
+        return err, 500
 
 
 # @app.route('/api/video', methods=['GET'])
