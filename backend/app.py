@@ -22,6 +22,7 @@ WOMBO_API_KEY = os.getenv('WOMBO_API_KEY')
 API_URL = "https://api.luan.tools/api"
 FRAMERATE = 2
 NEW_IMAGE_WEIGHT = 0.1
+GENERATOR_BATCH_SIZE = 30
 
 HEADERS = {
     'Authorization': f'Bearer {WOMBO_API_KEY}',
@@ -180,11 +181,12 @@ def download_video(url: str, project_id: str):
     return error_code
 
 
-def multi_img2img(prev_image_path: Path, project_id: str, prompt: str, style: int, start_num=2, number_generate=30):
-    print(f"[img2img] prompt:{prompt} s:{style} n:{num}")
+def multi_img2img(prev_image_path: Path, project_id: str, prompts: [str], style: int, start_num=2,
+                  ):
+    print(f"[img2img] prompts:{str(prompts)} s:{style} n:{start_num}-{len(prompts)}")
 
     tasks = []
-    for i in range(number_generate):
+    for _ in prompts:
         tasks.append(create_new_task(True))
 
     for t in tasks:
@@ -194,8 +196,8 @@ def multi_img2img(prev_image_path: Path, project_id: str, prompt: str, style: in
             fields["file"] = f.read()
             requests.request("POST", url=target_image_url["url"], files=fields)
 
-    for t in tasks:
-        update_task(t['id'], prompt, style=style, target_image_weight=(1 - NEW_IMAGE_WEIGHT))
+    for i, t in enumerate(tasks):
+        update_task(t['id'], prompts[i], style=style, target_image_weight=(1 - NEW_IMAGE_WEIGHT))
 
     res_arr = get_many_tasks(tasks, project_id, start_num)
 
@@ -311,23 +313,19 @@ def process_new_video(project_id: str, style: int, title: str):
     subs = utils.yoink_subtitles(Path(f'./working/{project_id}/{subfile}'), title)
     caps = utils.generate_captions(subs, FRAMERATE)
 
+    # speshal case
     while True:
         print("Generating Image 0")
-        res1 = single_image(project_id, caps[0][0], style)
+        res1 = single_image(project_id, caps[0], style)
         if res1:
             res.append(res1)
             break
 
-    for cap_tuple in caps:
-        if cap_tuple == caps[0]:
-            continue
-
-        for i in range(cap_tuple[1]):
-            print(f"Generating image {num}")
-            new_pic = new_img2img(Path(f"./working/{project_id}/{num}.jpg"), project_id, cap_tuple[0], style, num + 1)
-            if new_pic:
-                res.append(new_pic)
-                num += 1
+    num = 1
+    while num < len(caps):
+        subset = caps[num: min(num + GENERATOR_BATCH_SIZE, len(caps))]
+        multi_img2img(Path(f"./working/{project_id}/{num}.jpg"), project_id, subset, style, num)
+        num += len(subset)
 
     stitch_ffmpeg(project_id)
 

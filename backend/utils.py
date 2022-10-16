@@ -1,9 +1,11 @@
 from datetime import timedelta, datetime
 from pathlib import Path
 
-
 import re
+
 regex = re.compile(r'<[^>]+>')
+
+
 def remove_html(string):
     return str(regex.sub('', string).encode("ascii", "ignore"))
 
@@ -36,8 +38,7 @@ def yoink_subtitles(vtt_path: Path, title: str):
             # Blank line
             i += 1
 
-            if len(time_str)> 0:
-
+            if len(time_str) > 0:
                 # We only look at the start time.
                 start = datetime.strptime(time_str[0], '%H:%M:%S.%f')
                 start_time_seconds = timedelta(hours=start.hour, minutes=start.minute, seconds=start.second,
@@ -74,15 +75,11 @@ def generate_captions(subs: dict(), fps=10):
             # print("increase", times[ind], curr_time)
             ind += 1
 
-        if len(frame_captions) > 0 and frame_captions[-1][0] == subs[times[ind]]:
-            frame_captions[-1] = (frame_captions[-1][0], frame_captions[-1][1] + 1)
-        else:
-            frame_captions.append((subs[times[ind]], 1))
+        frame_captions.append(subs[times[ind]])
 
         curr_time += seconds_per_frame
 
     return frame_captions
-
 
 # xd = yoink_subtitles(Path('sampleSubs.vtt'), "The Paper Bag Princess by Robert Munsch")
 # print(generate_captions(xd))
