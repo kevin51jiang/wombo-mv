@@ -157,7 +157,7 @@ def new_img2img(prev_image_path: Path, project_id: str, prompt: str, style: int,
         fields["file"] = f.read()
         requests.request("POST", url=target_image_url["url"], files=fields)
 
-    updated_task = update_task(task_id, prompt, style=style, target_image_weight=(1 - NEW_IMAGE_WEIGHT))
+    updated_task = update_task(task_id, prompt, style=style, target_image_weight=(1 - NEW_IMAGE_WEIGHT * num))
     res = get_task(task_id, project_id, num)
 
     if res:
@@ -217,7 +217,7 @@ def new_image():
     while num < 10:
         print(f"Generating image {num}")
 
-        new_pic = new_img2img(Path(f"./working/{project_id}/{num}.jpg"), project_id, prompt, style, num + 1)
+        new_pic = new_img2img(Path(f"./working/{project_id}/0.jpg"), project_id, prompt, style, num + 1)
 
         if new_pic:
             res.append(new_pic)
