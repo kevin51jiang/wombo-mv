@@ -5,6 +5,8 @@ import os
 import time
 from pathlib import Path
 
+from vtt_to_srt import vtt_to_srt
+
 from concurrent.futures import ThreadPoolExecutor
 from uuid import uuid4
 from yt_dlp import YoutubeDL
@@ -20,9 +22,9 @@ app = Flask(__name__)
 
 WOMBO_API_KEY = os.getenv('WOMBO_API_KEY')
 API_URL = "https://api.luan.tools/api"
-FRAMERATE = 2
-NEW_IMAGE_WEIGHT = 0.1
-GENERATOR_BATCH_SIZE = 30
+FRAMERATE = 12
+NEW_IMAGE_WEIGHT = 0.09
+GENERATOR_BATCH_SIZE = 20
 
 HEADERS = {
     'Authorization': f'Bearer {WOMBO_API_KEY}',
@@ -127,10 +129,10 @@ def get_many_tasks(tasks: [str], job_id, num_start=2):
                 url = f"working/{job_id}/{num_start + ind}.jpg"
                 with open(f"./{url}", "wb") as image_file:
                     image_file.write(r.content)
-                print("image saved successfully ")
+                print(f"image saved successfully {ind}")
                 res[ind] = url
             elif state == "failed":
-                print("generation failed :(", json.dumps(response_json))
+                print(f"generation failed {ind} :(", json.dumps(response_json))
                 res[ind] = False
 
         time.sleep(3)
@@ -167,7 +169,9 @@ def download_video(url: str, project_id: str):
         'outtmpl': f'./working/{project_id}/audio.m4a',
         'format': 'm4a/bestaudio/best',
         'writesubtitles': True,
-        'subtitle': '--write-sub  --sub-langs en',
+        'subtitle': '--write-sub',
+        "writeautomaticsub": True,
+        # 'subtitleslangs': ['en'],
         # ℹ️ See help(yt_dlp.postprocessor) for a list of available Postprocessors and their arguments
         'postprocessors': [{  # Extract audio using ffmpeg
             'key': 'FFmpegExtractAudio',
@@ -181,15 +185,16 @@ def download_video(url: str, project_id: str):
     return error_code
 
 
-def multi_img2img(prev_image_path: Path, project_id: str, prompts: [str], style: int, start_num=2,
-                  ):
-    print(f"[img2img] prompts:{str(prompts)} s:{style} n:{start_num}-{len(prompts)}")
+def multi_img2img(prev_image_path: Path, project_id: str, prompts: [str], style: int, start_num=2):
+    print(f"[img2img] {project_id} prompts:{str(prompts)} s:{style} n:{start_num}-{len(prompts)}")
 
     tasks = []
-    for _ in prompts:
+    for i in range(len(prompts)) :
+        print(f"Create task {i}")
         tasks.append(create_new_task(True))
 
-    for t in tasks:
+    for i, t in enumerate(tasks):
+        print(f"Uploading for {i}")
         target_image_url = t["target_image_url"]
         with open(prev_image_path, 'rb') as f:
             fields = target_image_url["fields"]
@@ -208,7 +213,7 @@ def multi_img2img(prev_image_path: Path, project_id: str, prompts: [str], style:
     return
 
 
-def new_img2img(prev_image_path: Path, project_id: str, prompt: str, style: int, num=2):
+def new_img2img(prev_image_path: Path, project_id: str, prompt: str, style: int, num=0):
     print(f"[img2img] prompt:{prompt} s:{style} n:{num}")
 
     task = create_new_task(True)
@@ -310,6 +315,8 @@ def process_new_video(project_id: str, style: int, title: str):
         if ".vtt" in f:
             subfile = f
 
+    # vtt_to_srt.vtt_to_srt(f'./working/{project_id}/{subfile}')
+
     subs = utils.yoink_subtitles(Path(f'./working/{project_id}/{subfile}'), title)
     caps = utils.generate_captions(subs, FRAMERATE)
 
@@ -321,11 +328,11 @@ def process_new_video(project_id: str, style: int, title: str):
             res.append(res1)
             break
 
-    num = 1
-    while num < len(caps):
+    num = 0
+    while num < len(caps) - 1:
         subset = caps[num: min(num + GENERATOR_BATCH_SIZE, len(caps))]
         multi_img2img(Path(f"./working/{project_id}/{num}.jpg"), project_id, subset, style, num)
-        num += len(subset)
+        num += len(subset) - 1
 
     stitch_ffmpeg(project_id)
 

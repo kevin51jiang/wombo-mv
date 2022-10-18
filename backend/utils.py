@@ -7,7 +7,7 @@ regex = re.compile(r'<[^>]+>')
 
 
 def remove_html(string):
-    return str(regex.sub('', string).encode("ascii", "ignore"))
+    return regex.sub('', string).encode("ascii", "ignore").decode("utf-8")
 
 
 def yoink_subtitles(vtt_path: Path, title: str):
@@ -31,7 +31,7 @@ def yoink_subtitles(vtt_path: Path, title: str):
             i += 1
 
             # multiline captions
-            while lines[i].strip() != "":
+            while lines[i] != "\n":
                 content += ' ' + lines[i].strip()
                 i += 1
 
